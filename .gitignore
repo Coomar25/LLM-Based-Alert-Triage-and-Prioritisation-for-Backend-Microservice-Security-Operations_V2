@@ -4,3 +4,4 @@ demo/.venv/
 demo/.pytest_cache/
 demo/frontend/node_modules/.env
 .env
+.env
