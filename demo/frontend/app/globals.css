@@ -552,3 +552,165 @@ table.cmp td.best {
   color: var(--bad);
   font-weight: 600;
 }
+
+/* ---------- Live Run page ---------- */
+.lp-grid {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 22px;
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .lp-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.lp-banner {
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+}
+.lp-banner.ok {
+  background: #e9f6ec;
+  color: var(--good-ink);
+}
+.lp-banner.bad {
+  background: #fbe9e9;
+  color: var(--bad);
+}
+.lp-banner code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.lp-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.lp-select,
+.lp-textarea {
+  width: 100%;
+  border: 1px solid var(--baseline);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: var(--font);
+  background: var(--surface-1);
+  color: var(--ink-1);
+}
+.lp-textarea {
+  min-height: 150px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  resize: vertical;
+}
+.lp-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.lp-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lp-check input {
+  width: 16px;
+  height: 16px;
+}
+.lp-run-btn,
+.lp-stop-btn {
+  flex: 1;
+  border: none;
+  border-radius: 10px;
+  padding: 13px 18px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  color: #fff;
+}
+.lp-run-btn {
+  background: var(--good);
+}
+.lp-run-btn:disabled {
+  background: var(--baseline);
+  cursor: not-allowed;
+}
+.lp-stop-btn {
+  background: var(--bad);
+}
+.lp-err {
+  margin-top: 12px;
+  color: var(--bad);
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.lp-sub {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.lp-tag {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.85;
+  margin-left: 8px;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.lp-muted {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 600;
+}
+.verdict .body .lp-muted {
+  color: var(--muted);
+}
+.lp-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.lp-status {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  font-style: italic;
+}
+.lp-gt {
+  font-size: 14px;
+  color: var(--ink-2);
+  margin-bottom: 14px;
+  padding: 10px 16px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.lp-results {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+.spin {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

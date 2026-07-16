@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 BACK_PORT=8077
-FRONT_PORT=3000
+FRONT_PORT=4000
 
 if [ ! -x "demo/.venv/bin/uvicorn" ]; then
   echo "demo/.venv not found. Create it first:"

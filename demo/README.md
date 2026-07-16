@@ -33,7 +33,21 @@ demo/
 - **Triage Explorer** — every held-out alert with both pipelines' verdicts side
   by side and the exact KB context RAG retrieved. Filter to **RAG broke** to
   show the regressions.
+- **Live Run** — submit an alert and watch all three pipelines classify it in
+  **realtime**. Unlike the cached pages, this calls the real code and Ollama and
+  streams each result back over SSE as it finishes. **Needs Ollama running.**
 - **Pipeline** — the four project stages and the "why these choices" viva notes.
+
+### Cached vs. Live — the two data paths
+
+| | Frontend → Backend | Backend → research project |
+|---|---|---|
+| **Cached** (Overview/Triage/Pipeline) | live HTTP fetch | pre-baked into `backend/data/*.json` by `build_demo_data.py` |
+| **Live** (`/api/live/*`) | HTTP + SSE stream | **realtime** — imports `ait_parser` and runs `predict_b1`, `Retriever`, and `generate → Ollama` |
+
+The Live path is a separate router (`backend/live.py`); its heavy deps and
+Ollama are only touched when a `/api/live/*` endpoint is hit, so the cached
+pages keep working even with Ollama off.
 
 Data sources (all cached / committed):
 
@@ -55,6 +69,16 @@ bash demo/run.sh
 ```
 
 Then open **http://localhost:3000**. Backend runs on :8077.
+
+### For the Live Run page (optional — needs Ollama)
+
+```bash
+ollama serve                 # if not already running
+ollama pull llama3.2:3b      # fast model used by default
+```
+
+Then open the **Live Run** tab. The green banner confirms Ollama is connected.
+The cached pages work with or without Ollama.
 
 ### First-time setup (already done on this machine)
 

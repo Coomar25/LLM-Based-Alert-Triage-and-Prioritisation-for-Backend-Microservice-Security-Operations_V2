@@ -13,6 +13,42 @@ export const getPhases = () => getJSON("/api/phases");
 export const getAlerts = () => getJSON("/api/alerts");
 export const getAlert = (id) => getJSON(`/api/alerts/${id}`);
 
+// --- Live inference ---------------------------------------------------------
+export const getLiveHealth = () => getJSON("/api/live/health");
+export const getLiveSamples = () => getJSON("/api/live/samples");
+
+// Stream a live run over SSE-via-fetch (POST body means EventSource can't be
+// used). Calls onEvent(evt) for each parsed `data:` event.
+export async function runLive(payload, onEvent, signal) {
+  const res = await fetch(`${API_BASE}/api/live/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`live/run -> ${res.status}`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split("\n\n");
+    buf = parts.pop();
+    for (const part of parts) {
+      const line = part.trim();
+      if (line.startsWith("data: ")) {
+        try {
+          onEvent(JSON.parse(line.slice(6)));
+        } catch {
+          /* ignore malformed chunk */
+        }
+      }
+    }
+  }
+}
+
 // Shared display helpers -----------------------------------------------------
 
 export const PALETTE = {
