@@ -43,6 +43,14 @@ Usage
 The evaluation harness (ConfusionMatrix, EvaluationResult) is imported from
 baselines/ — built once in M6, reused unchanged. This guarantees the LLM
 pipeline is scored on identical metric definitions as the rule-based baseline.
+
+
+# LLM-only
+python3 ait_parser/run_grok_llm_only.py \
+    --input data/processed/sample_5k.jsonl --output results/llm_only_groq \
+    --provider groq --model llama-3.1-8b-instant --workers 2
+
+    
 """
 
 import argparse
@@ -99,7 +107,8 @@ def infer_one(alert: dict, provider) -> dict:
         "explanation": pred["explanation"],
         "latency_ms": round(resp.latency_ms, 1),
         "parse_ok": resp.parse_ok,
-        "malformed": pred["_malformed"] or not resp.parse_ok,
+        "infra_error": resp.infra_error,
+        "malformed": (pred["_malformed"] or not resp.parse_ok) and not resp.infra_error,
     }
 
 
@@ -162,6 +171,7 @@ def main():
     result = EvaluationResult(pipeline_name="LLM-only", split_name="test")
     predictions_path = args.output / "predictions.jsonl"
     n_malformed = 0
+    n_infra_failed = 0
     n_done = 0
     t_start = time.perf_counter()
 
@@ -181,6 +191,18 @@ def main():
             # so result.record() and file writes are serialised and safe.
             for future in as_completed(future_to_alert):
                 rec = future.result()
+
+                # Infrastructure failures (rate-limit/timeout/empty after all
+                # retries) are NOT real predictions — exclude them from the
+                # evaluation rather than scoring them as (benign) misses.
+                if rec.get("infra_error"):
+                    n_infra_failed += 1
+                    with write_lock:
+                        pred_f.write(json.dumps({
+                            k: v for k, v in rec.items() if k != "malformed"
+                        }, default=str) + "\n")
+                    n_done += 1
+                    continue
 
                 # Record into the shared evaluation harness (main thread only)
                 result.record(
@@ -207,13 +229,16 @@ def main():
                     print(f"  ... {n_done}/{len(alerts)} done "
                           f"({rate:.2f} alerts/sec, "
                           f"ETA {eta/60:.1f} min, "
-                          f"{n_malformed} malformed)", file=sys.stderr)
+                          f"{n_malformed} malformed, "
+                          f"{n_infra_failed} infra-failed)", file=sys.stderr)
 
     elapsed = time.perf_counter() - t_start
 
     # ---- Results ----
     results_dict = result.to_dict()
     results_dict["malformed_outputs"] = n_malformed
+    results_dict["infra_failed_excluded"] = n_infra_failed
+    results_dict["n_scored"] = result.to_dict().get("n_alerts", 0)
     results_dict["wall_clock_seconds"] = round(elapsed, 1)
     results_dict["throughput_alerts_per_second"] = round(n_done / elapsed, 3) if elapsed else 0
     results_dict["workers"] = args.workers
@@ -228,6 +253,12 @@ def main():
     print("=" * 70, file=sys.stderr)
     print(f"  {format_headline(result)}", file=sys.stderr)
     print(f"  Malformed outputs: {n_malformed}/{n_done}", file=sys.stderr)
+    if n_infra_failed:
+        print(f"  ⚠️  Infrastructure failures EXCLUDED from scoring: "
+              f"{n_infra_failed} (rate-limit/timeout). Metrics computed on "
+              f"{n_done - n_infra_failed} successfully-answered alerts. "
+              f"If this number is high, reduce --workers or add pacing.",
+              file=sys.stderr)
     if elapsed:
         print(f"  Wall clock: {elapsed:.0f}s "
               f"({n_done / elapsed:.2f} alerts/sec with {args.workers} workers)",

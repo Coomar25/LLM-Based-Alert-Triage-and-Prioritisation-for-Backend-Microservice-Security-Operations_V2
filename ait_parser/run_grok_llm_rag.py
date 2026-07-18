@@ -29,7 +29,7 @@ experiment honest.
 
 Usage
 -----
-    python run_grok_llm_rag.py \\
+    python run_llm_rag.py \\
         --input data/processed/sample_5k.jsonl \\
         --output results/llm_rag \\
         --kb-dir data/kb \\
@@ -37,19 +37,22 @@ Usage
         --workers 3 \\
         --top-k 3
 
+
+    # LLM+RAG source-balanced
+    python3 ait_parser/run_grok_llm_rag.py \
+        --input data/processed/sample_5k.jsonl --output results/llm_rag_groq \
+        --kb-dir data/kb --provider groq --model llama-3.1-8b-instant \
+        --workers 2 --top-k 3
+
+
+    # LLM+RAG runbook-only
+    python3 ait_parser/run_grok_llm_rag.py \
+        --input data/processed/sample_5k.jsonl --output results/llm_rag_groq_runbook \
+        --kb-dir data/kb --provider groq --model llama-3.1-8b-instant \
+        --workers 2 --top-k 1 --runbook-only
+
     # Smoke test first
     python run_llm_rag.py --input ... --output ... --kb-dir data/kb --limit 20
-
-    // Run with Groq hosted inference (needs GROQ_API_KEY)
-
-    python3 ait_parser/run_llm_rag.py \
-    --input data/processed/sample_5k.jsonl \
-    --output results/llm_rag_groq \
-    --kb-dir data/kb \
-    --provider groq \
-    --model llama-3.1-8b-instant \
-    --workers 4 \
-    --top-k 3
 """
 
 import argparse
@@ -114,7 +117,8 @@ def infer_one(alert: dict, retriever: Retriever, top_k: int,
         "retrieval_ms": round(retrieval_ms, 1),
         "latency_ms": round(resp.latency_ms, 1),
         "parse_ok": resp.parse_ok,
-        "malformed": pred["_malformed"] or not resp.parse_ok,
+        "infra_error": resp.infra_error,
+        "malformed": (pred["_malformed"] or not resp.parse_ok) and not resp.infra_error,
     }
 
 
@@ -192,6 +196,7 @@ def main():
     result = EvaluationResult(pipeline_name="LLM+RAG", split_name="test")
     predictions_path = args.output / "predictions.jsonl"
     n_malformed = 0
+    n_infra_failed = 0
     n_done = 0
     total_retrieval_ms = 0.0
     t_start = time.perf_counter()
@@ -206,6 +211,17 @@ def main():
             }
             for future in as_completed(future_to_alert):
                 rec = future.result()
+
+                # Exclude infrastructure failures from scoring (see run_llm_only).
+                if rec.get("infra_error"):
+                    n_infra_failed += 1
+                    total_retrieval_ms += rec["retrieval_ms"]
+                    with write_lock:
+                        pred_f.write(json.dumps({
+                            k: v for k, v in rec.items() if k != "malformed"
+                        }, default=str) + "\n")
+                    n_done += 1
+                    continue
 
                 result.record(
                     predicted_attack=rec["predicted_is_attack"],
@@ -237,6 +253,7 @@ def main():
     # ---- Results ----
     results_dict = result.to_dict()
     results_dict["malformed_outputs"] = n_malformed
+    results_dict["infra_failed_excluded"] = n_infra_failed
     results_dict["wall_clock_seconds"] = round(elapsed, 1)
     results_dict["throughput_alerts_per_second"] = round(n_done / elapsed, 3) if elapsed else 0
     results_dict["mean_retrieval_ms"] = round(total_retrieval_ms / n_done, 1) if n_done else 0
@@ -255,6 +272,10 @@ def main():
     print("=" * 70, file=sys.stderr)
     print(f"  {format_headline(result)}", file=sys.stderr)
     print(f"  Malformed outputs: {n_malformed}/{n_done}", file=sys.stderr)
+    if n_infra_failed:
+        print(f"  ⚠️  Infrastructure failures EXCLUDED from scoring: "
+              f"{n_infra_failed} (rate-limit/timeout). Reduce --workers if high.",
+              file=sys.stderr)
     print(f"  Mean retrieval time: {total_retrieval_ms / n_done:.1f}ms/alert"
           if n_done else "", file=sys.stderr)
     if elapsed:

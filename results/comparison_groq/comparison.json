@@ -1,0 +1,89 @@
+{
+  "overall": {
+    "rule_based": {
+      "precision": 0.714957,
+      "recall": 0.996541,
+      "f1": 0.832585,
+      "fpr": 0.709634,
+      "n_alerts": 1381186,
+      "mean_latency_ms": 0.000145,
+      "_variant": "B1"
+    },
+    "llm_only": {
+      "precision": 0.652174,
+      "recall": 0.265393,
+      "f1": 0.377264,
+      "fpr": 0.333333,
+      "n_alerts": 2013,
+      "mean_latency_ms": 127.928564
+    },
+    "llm_rag": {
+      "precision": 0.717391,
+      "recall": 0.093418,
+      "f1": 0.16531,
+      "fpr": 0.086667,
+      "n_alerts": 2013,
+      "mean_latency_ms": 101.682017
+    }
+  },
+  "per_phase_recall": {
+    "network_scans": {
+      "llm_only": 0.433333,
+      "llm_rag": 0.066667,
+      "delta": -0.36666600000000005
+    },
+    "service_scans": {
+      "llm_only": 0.2,
+      "llm_rag": 0.14,
+      "delta": -0.06
+    },
+    "dirb": {
+      "llm_only": 0.196,
+      "llm_rag": 0.092,
+      "delta": -0.10400000000000001
+    },
+    "wpscan": {
+      "llm_only": 0.345,
+      "llm_rag": 0.12,
+      "delta": -0.22499999999999998
+    },
+    "webshell": {
+      "llm_only": 0.382353,
+      "llm_rag": 0.117647,
+      "delta": -0.264706
+    },
+    "cracking": {
+      "llm_only": 0.275,
+      "llm_rag": 0.1,
+      "delta": -0.17500000000000002
+    },
+    "reverse_shell": {
+      "llm_only": 0.242424,
+      "llm_rag": 0.045455,
+      "delta": -0.196969
+    },
+    "privilege_escalation": {
+      "llm_only": 0.122951,
+      "llm_rag": 0.032787,
+      "delta": -0.09016400000000001
+    },
+    "service_stop": {
+      "llm_only": 0.0,
+      "llm_rag": 0.0,
+      "delta": 0.0
+    },
+    "dnsteal": {
+      "llm_only": 0.25,
+      "llm_rag": 0.095,
+      "delta": -0.155
+    }
+  },
+  "rag_effect": {
+    "delta_f1": -0.21195399999999998,
+    "delta_recall": -0.171975,
+    "delta_precision": 0.06521699999999997,
+    "delta_fpr": -0.246666,
+    "phases_improved": 0,
+    "phases_worsened": 9
+  }
+}
