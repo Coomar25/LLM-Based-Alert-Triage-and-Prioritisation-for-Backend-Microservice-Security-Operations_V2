@@ -31,11 +31,11 @@ per-alert predictions and the aggregate metrics are deterministic.
 
 Usage
 -----
-    python run_llm_only.py \
-        --input data/processed/sample_2k.jsonl \
-        --output results/llm/llm_only \
-        --model llama3.2:8b \
-        --workers 4
+    python run_llm_only.py \\
+        --input data/processed/sample_2k.jsonl \\
+        --output results/llm_only \\
+        --model llama3.2:3b \\
+        --workers 3
 
     # Test on the first 20 alerts before the full run
     python run_llm_only.py --input ... --output ... --limit 20 --workers 3
@@ -43,12 +43,6 @@ Usage
 The evaluation harness (ConfusionMatrix, EvaluationResult) is imported from
 baselines/ — built once in M6, reused unchanged. This guarantees the LLM
 pipeline is scored on identical metric definitions as the rule-based baseline.
-
-python3 ait_parser/run_llm_only.py \
-    --input data/processed/sample_5k.jsonl \
-    --output results/llm_only \
-    --model llama3.2:3b \
-    --workers 3
 """
 
 import argparse
@@ -66,8 +60,9 @@ from baselines.splits import split_of
 
 from llm import (
     compact_alert_text, build_llm_only_prompt, normalise_llm_output,
-    generate, check_ollama, DEFAULT_MODEL, DEFAULT_OLLAMA_URL,
 )
+from llm.provider import get_provider, DEFAULT_MODEL_BY_PROVIDER
+from llm.ollama_client import DEFAULT_OLLAMA_URL
 
 
 def iter_alerts(path: Path):
@@ -82,7 +77,7 @@ def iter_alerts(path: Path):
                 continue
 
 
-def infer_one(alert: dict, model: str, url: str) -> dict:
+def infer_one(alert: dict, provider) -> dict:
     """Pure worker function: run one alert through the model.
 
     Returns a self-contained result dict binding the prediction to its alert.
@@ -90,7 +85,7 @@ def infer_one(alert: dict, model: str, url: str) -> dict:
     """
     alert_text = compact_alert_text(alert)
     prompt = build_llm_only_prompt(alert_text)
-    resp = generate(prompt, model=model, url=url)
+    resp = provider.generate(prompt)
     pred = normalise_llm_output(resp.parsed_json)
 
     return {
@@ -104,7 +99,8 @@ def infer_one(alert: dict, model: str, url: str) -> dict:
         "explanation": pred["explanation"],
         "latency_ms": round(resp.latency_ms, 1),
         "parse_ok": resp.parse_ok,
-        "malformed": pred["_malformed"] or not resp.parse_ok,
+        "infra_error": resp.infra_error,
+        "malformed": (pred["_malformed"] or not resp.parse_ok) and not resp.infra_error,
     }
 
 
@@ -115,12 +111,18 @@ def main():
                     help="Sampled alerts JSONL (from sampler.py)")
     ap.add_argument("--output", required=True, type=Path,
                     help="Output directory for predictions and results")
-    ap.add_argument("--model", default=DEFAULT_MODEL,
-                    help=f"Ollama model name (default {DEFAULT_MODEL})")
+    ap.add_argument("--provider", choices=["ollama", "groq", "gemini"], default="ollama",
+                    help="Inference backend: 'ollama' (local) or 'groq' "
+                         "(hosted, fast, needs GROQ_API_KEY). Default: ollama")
+    ap.add_argument("--model", default=None,
+                    help="Model identifier. Defaults per provider: ollama "
+                         "'mistral', groq 'llama-3.1-8b-instant'. Note the "
+                         "identifiers differ between providers.")
     ap.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL)
     ap.add_argument("--workers", type=int, default=3,
                     help="Number of concurrent inference requests (default 3). "
-                         "On CPU, 2-4 is usually optimal; more causes contention.")
+                         "On CPU Ollama, 2-4 is optimal. On Groq, higher is "
+                         "fine but watch free-tier rate limits.")
     ap.add_argument("--limit", type=int, default=None,
                     help="Process only the first N alerts (for testing)")
     args = ap.parse_args()
@@ -130,13 +132,17 @@ def main():
         sys.exit(1)
     args.output.mkdir(parents=True, exist_ok=True)
 
+    # ---- Resolve provider ----
+    provider = get_provider(args.provider, model=args.model,
+                            ollama_url=args.ollama_url)
+
     # ---- Health check ----
-    print("Checking Ollama...", file=sys.stderr)
-    ok, msg = check_ollama(model=args.model, url=args.ollama_url)
+    print(f"Checking provider '{provider.name}' (model '{provider.model}')...",
+          file=sys.stderr)
+    ok, msg = provider.check()
     print(f"  {msg}", file=sys.stderr)
     if not ok:
-        print("ERROR: Ollama health check failed. Is it running? "
-              "Did you `ollama pull` the model?", file=sys.stderr)
+        print(f"ERROR: {provider.name} health check failed.", file=sys.stderr)
         sys.exit(1)
 
     # ---- Load alerts (test-split only, honour --limit) ----
@@ -149,13 +155,15 @@ def main():
             break
     print(f"\nLoaded {len(alerts)} test-split alerts for inference.",
           file=sys.stderr)
-    print(f"Running LLM-only triage with model '{args.model}' "
+    print(f"Running LLM-only triage with {provider.name} model "
+          f"'{provider.model}' "
           f"using {args.workers} concurrent workers...", file=sys.stderr)
 
     # ---- Concurrent inference, sequential aggregation ----
     result = EvaluationResult(pipeline_name="LLM-only", split_name="test")
     predictions_path = args.output / "predictions.jsonl"
     n_malformed = 0
+    n_infra_failed = 0
     n_done = 0
     t_start = time.perf_counter()
 
@@ -167,7 +175,7 @@ def main():
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             # Submit all alerts
             future_to_alert = {
-                pool.submit(infer_one, alert, args.model, args.ollama_url): alert
+                pool.submit(infer_one, alert, provider): alert
                 for alert in alerts
             }
 
@@ -175,6 +183,18 @@ def main():
             # so result.record() and file writes are serialised and safe.
             for future in as_completed(future_to_alert):
                 rec = future.result()
+
+                # Infrastructure failures (rate-limit/timeout/empty after all
+                # retries) are NOT real predictions — exclude them from the
+                # evaluation rather than scoring them as (benign) misses.
+                if rec.get("infra_error"):
+                    n_infra_failed += 1
+                    with write_lock:
+                        pred_f.write(json.dumps({
+                            k: v for k, v in rec.items() if k != "malformed"
+                        }, default=str) + "\n")
+                    n_done += 1
+                    continue
 
                 # Record into the shared evaluation harness (main thread only)
                 result.record(
@@ -201,17 +221,21 @@ def main():
                     print(f"  ... {n_done}/{len(alerts)} done "
                           f"({rate:.2f} alerts/sec, "
                           f"ETA {eta/60:.1f} min, "
-                          f"{n_malformed} malformed)", file=sys.stderr)
+                          f"{n_malformed} malformed, "
+                          f"{n_infra_failed} infra-failed)", file=sys.stderr)
 
     elapsed = time.perf_counter() - t_start
 
     # ---- Results ----
     results_dict = result.to_dict()
     results_dict["malformed_outputs"] = n_malformed
+    results_dict["infra_failed_excluded"] = n_infra_failed
+    results_dict["n_scored"] = result.to_dict().get("n_alerts", 0)
     results_dict["wall_clock_seconds"] = round(elapsed, 1)
     results_dict["throughput_alerts_per_second"] = round(n_done / elapsed, 3) if elapsed else 0
     results_dict["workers"] = args.workers
-    results_dict["model"] = args.model
+    results_dict["provider"] = provider.name
+    results_dict["model"] = provider.model
 
     (args.output / "results.json").write_text(
         json.dumps(results_dict, indent=2, default=str))
@@ -221,6 +245,12 @@ def main():
     print("=" * 70, file=sys.stderr)
     print(f"  {format_headline(result)}", file=sys.stderr)
     print(f"  Malformed outputs: {n_malformed}/{n_done}", file=sys.stderr)
+    if n_infra_failed:
+        print(f"  ⚠️  Infrastructure failures EXCLUDED from scoring: "
+              f"{n_infra_failed} (rate-limit/timeout). Metrics computed on "
+              f"{n_done - n_infra_failed} successfully-answered alerts. "
+              f"If this number is high, reduce --workers or add pacing.",
+              file=sys.stderr)
     if elapsed:
         print(f"  Wall clock: {elapsed:.0f}s "
               f"({n_done / elapsed:.2f} alerts/sec with {args.workers} workers)",

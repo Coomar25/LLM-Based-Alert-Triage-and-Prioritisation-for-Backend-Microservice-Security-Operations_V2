@@ -43,14 +43,6 @@ Usage
 The evaluation harness (ConfusionMatrix, EvaluationResult) is imported from
 baselines/ — built once in M6, reused unchanged. This guarantees the LLM
 pipeline is scored on identical metric definitions as the rule-based baseline.
-
-
-# LLM-only
-python3 ait_parser/run_grok_llm_only.py \
-    --input data/processed/sample_5k.jsonl --output results/llm_only_groq \
-    --provider groq --model llama-3.1-8b-instant --workers 2
-
-    
 """
 
 import argparse

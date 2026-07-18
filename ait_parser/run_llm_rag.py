@@ -31,7 +31,7 @@ Usage
 -----
     python run_llm_rag.py \\
         --input data/processed/sample_5k.jsonl \\
-        --output results/llm_rag \\
+        --output results/llm/llm_rag \\
         --kb-dir data/kb \\
         --model llama3.2:3b \\
         --workers 3 \\

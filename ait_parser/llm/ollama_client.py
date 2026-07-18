@@ -39,6 +39,7 @@ class LlmResponse:
     parsed_json: Optional[dict]
     parse_ok: bool
     error: Optional[str] = None
+    infra_error: bool = False
 
 
 def _extract_json(text: str) -> Optional[dict]:

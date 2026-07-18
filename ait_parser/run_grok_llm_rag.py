@@ -37,20 +37,6 @@ Usage
         --workers 3 \\
         --top-k 3
 
-
-    # LLM+RAG source-balanced
-    python3 ait_parser/run_grok_llm_rag.py \
-        --input data/processed/sample_5k.jsonl --output results/llm_rag_groq \
-        --kb-dir data/kb --provider groq --model llama-3.1-8b-instant \
-        --workers 2 --top-k 3
-
-
-    # LLM+RAG runbook-only
-    python3 ait_parser/run_grok_llm_rag.py \
-        --input data/processed/sample_5k.jsonl --output results/llm_rag_groq_runbook \
-        --kb-dir data/kb --provider groq --model llama-3.1-8b-instant \
-        --workers 2 --top-k 1 --runbook-only
-
     # Smoke test first
     python run_llm_rag.py --input ... --output ... --kb-dir data/kb --limit 20
 """
