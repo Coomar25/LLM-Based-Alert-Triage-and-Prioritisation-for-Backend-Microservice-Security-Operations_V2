@@ -60,12 +60,22 @@ DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
 
 @dataclass
 class LlmResponse:
-    """Result of one generation call. Identical shape to ollama_client."""
+    """Result of one generation call. Identical shape to ollama_client,
+    plus infra_error to distinguish an infrastructure failure (rate-limit,
+    timeout, empty response after retries) from a genuine parse failure
+    (the model returned text that wasn't valid JSON).
+
+    infra_error=True means "we never got a usable answer from the service"
+    — such alerts should be EXCLUDED from evaluation, not counted as a
+    (benign) prediction. parse_ok=False with infra_error=False means the
+    model DID answer but the JSON was malformed — a real model failure.
+    """
     raw_text: str
     latency_ms: float
     parsed_json: Optional[dict]
     parse_ok: bool
     error: Optional[str] = None
+    infra_error: bool = False
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -110,14 +120,21 @@ def generate(
     url: str = GROQ_URL,
     temperature: float = 0.0,
     timeout: int = 60,
-    max_retries: int = 4,
+    max_retries: int = 8,
     expect_json: bool = True,
+    min_interval_s: float = 0.0,
 ) -> LlmResponse:
     """Call Groq's chat completions endpoint once (with retries).
 
     Mirrors ollama_client.generate: same signature shape, same LlmResponse
     return. temperature=0 for reproducible triage. Handles rate limiting
-    (HTTP 429) with backoff.
+    (HTTP 429) with backoff, retrying up to max_retries times (default 8,
+    high because the free tier throttles aggressively). If all retries are
+    exhausted the response is flagged infra_error=True so the caller can
+    exclude it rather than count it as a benign prediction.
+
+    min_interval_s: if >0, sleep this long before the request. Used for
+    proactive pacing to stay under the free-tier rate limit.
     """
     api_key = _get_api_key()
     if not api_key:
@@ -125,7 +142,12 @@ def generate(
             raw_text="", latency_ms=0.0, parsed_json=None, parse_ok=False,
             error="GROQ_API_KEY environment variable is not set. "
                   "Get a free key at https://console.groq.com and export it.",
+            infra_error=True,
         )
+
+    # Proactive pacing to avoid hammering the rate limit.
+    if min_interval_s > 0:
+        time.sleep(min_interval_s)
 
     # Groq uses the OpenAI chat format: a list of messages.
     payload = {
@@ -142,7 +164,6 @@ def generate(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
-        "User-Agent": "llm-alert-triage/1.0 (dissertation research)",
     }
 
     last_err = None
@@ -159,11 +180,25 @@ def generate(
                         .get("message", {})
                         .get("content", ""))
             parsed = _extract_json(raw_text) if expect_json else None
+            # An empty body counts as an infrastructure failure, not a
+            # legitimate (parseable) benign answer.
+            if not raw_text.strip():
+                last_err = "Empty response body from API"
+                if attempt < max_retries:
+                    time.sleep(2.0)
+                    continue
+                return LlmResponse(
+                    raw_text="", latency_ms=latency_ms, parsed_json=None,
+                    parse_ok=False, error=last_err, infra_error=True,
+                )
             return LlmResponse(
                 raw_text=raw_text,
                 latency_ms=latency_ms,
                 parsed_json=parsed,
                 parse_ok=parsed is not None,
+                # parse_ok False here means the model answered but the JSON
+                # was bad — a genuine model failure, NOT infra.
+                infra_error=False,
             )
 
         except urllib.error.HTTPError as e:
@@ -175,14 +210,14 @@ def generate(
                     try:
                         wait = float(retry_after)
                     except ValueError:
-                        wait = 2.0 * (2 ** attempt)
+                        wait = min(2.0 * (2 ** attempt), 30.0)
                 else:
-                    wait = 2.0 * (2 ** attempt)  # 2, 4, 8, 16s
-                time.sleep(min(wait, 30.0))
+                    wait = min(2.0 * (2 ** attempt), 30.0)  # capped backoff
+                time.sleep(wait)
                 continue
             # Other server errors — brief backoff and retry
             if 500 <= e.code < 600 and attempt < max_retries:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(2.0 * (attempt + 1))
                 continue
             # Non-retryable (e.g. 401 bad key, 400 bad request)
             try:
@@ -195,12 +230,15 @@ def generate(
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             last_err = str(e)
             if attempt < max_retries:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(2.0 * (attempt + 1))
                 continue
 
+    # All retries exhausted — this is an infrastructure failure, flagged so
+    # the caller excludes it from evaluation instead of scoring it as benign.
     return LlmResponse(
         raw_text="", latency_ms=0.0, parsed_json=None, parse_ok=False,
         error=f"All {max_retries + 1} attempts failed. Last error: {last_err}",
+        infra_error=True,
     )
 
 
