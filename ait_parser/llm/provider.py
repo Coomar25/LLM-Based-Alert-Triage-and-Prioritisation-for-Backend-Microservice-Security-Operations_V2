@@ -20,12 +20,14 @@ from typing import Callable, Optional, Tuple
 
 from . import ollama_client
 from . import groq_client
+from . import gemini_client
 
 
 # Default model per provider (used if --model not given).
 DEFAULT_MODEL_BY_PROVIDER = {
     "ollama": ollama_client.DEFAULT_MODEL,          # "mistral"
     "groq": groq_client.DEFAULT_GROQ_MODEL,          # "llama-3.1-8b-instant"
+    "gemini": gemini_client.DEFAULT_GEMINI_MODEL,    # "gemini-2.0-flash"
 }
 
 
@@ -76,5 +78,16 @@ def get_provider(provider: str, model: Optional[str] = None,
             _url=groq_client.GROQ_URL,
         )
 
+    if provider == "gemini":
+        return Provider(
+            name="gemini",
+            model=model or gemini_client.DEFAULT_GEMINI_MODEL,
+            _generate=gemini_client.generate,
+            _check=gemini_client.check_gemini,
+            # Gemini builds its endpoint from the model internally; pass None
+            # so the client uses its URL template.
+            _url=None,
+        )
+
     raise ValueError(f"Unknown provider '{provider}'. "
-                     f"Choose from: ollama, groq")
+                     f"Choose from: ollama, groq, gemini")

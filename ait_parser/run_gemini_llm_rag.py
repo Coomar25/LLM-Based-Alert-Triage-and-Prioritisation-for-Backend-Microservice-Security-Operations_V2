@@ -55,8 +55,9 @@ from baselines.splits import split_of
 
 from llm import (
     compact_alert_text, build_rag_prompt, normalise_llm_output,
-    generate, check_ollama, DEFAULT_MODEL, DEFAULT_OLLAMA_URL,
 )
+from llm.provider import get_provider
+from llm.ollama_client import DEFAULT_OLLAMA_URL
 from llm.retrieval import Retriever
 
 
@@ -73,7 +74,7 @@ def iter_alerts(path: Path):
 
 
 def infer_one(alert: dict, retriever: Retriever, top_k: int,
-              model: str, url: str) -> dict:
+              provider) -> dict:
     """Pure worker: retrieve context, build RAG prompt, call model.
 
     Returns a self-contained result binding the prediction to its alert.
@@ -87,7 +88,7 @@ def infer_one(alert: dict, retriever: Retriever, top_k: int,
     # --- LLM call ---
     alert_text = compact_alert_text(alert)
     prompt = build_rag_prompt(alert_text, context)
-    resp = generate(prompt, model=model, url=url)
+    resp = provider.generate(prompt)
     pred = normalise_llm_output(resp.parsed_json)
 
     return {
@@ -102,7 +103,8 @@ def infer_one(alert: dict, retriever: Retriever, top_k: int,
         "retrieval_ms": round(retrieval_ms, 1),
         "latency_ms": round(resp.latency_ms, 1),
         "parse_ok": resp.parse_ok,
-        "malformed": pred["_malformed"] or not resp.parse_ok,
+        "infra_error": resp.infra_error,
+        "malformed": (pred["_malformed"] or not resp.parse_ok) and not resp.infra_error,
     }
 
 
@@ -114,11 +116,19 @@ def main():
     ap.add_argument("--output", required=True, type=Path)
     ap.add_argument("--kb-dir", required=True, type=Path,
                     help="ChromaDB persist dir (data/kb)")
-    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--provider", choices=["ollama", "groq", "gemini"], default="ollama",
+                    help="Inference backend: 'ollama' (local) or 'groq' "
+                         "(hosted, needs GROQ_API_KEY). Default: ollama")
+    ap.add_argument("--model", default=None,
+                    help="Model identifier. Defaults per provider: ollama "
+                         "'mistral', groq 'llama-3.1-8b-instant'.")
     ap.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL)
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--top-k", type=int, default=3,
                     help="Number of KB entries to retrieve per alert (default 3)")
+    ap.add_argument("--runbook-only", action="store_true",
+                    help="Retrieve ONLY from the runbook corpus (isolates the "
+                         "curated operational docs from CVE/MITRE noise)")
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
 
@@ -130,19 +140,26 @@ def main():
         sys.exit(1)
     args.output.mkdir(parents=True, exist_ok=True)
 
+    # ---- Resolve provider ----
+    provider = get_provider(args.provider, model=args.model,
+                            ollama_url=args.ollama_url)
+
     # ---- Health checks ----
-    print("Checking Ollama...", file=sys.stderr)
-    ok, msg = check_ollama(model=args.model, url=args.ollama_url)
+    print(f"Checking provider '{provider.name}' (model '{provider.model}')...",
+          file=sys.stderr)
+    ok, msg = provider.check()
     print(f"  {msg}", file=sys.stderr)
     if not ok:
-        print("ERROR: Ollama health check failed.", file=sys.stderr)
+        print(f"ERROR: {provider.name} health check failed.", file=sys.stderr)
         sys.exit(1)
 
     print("Loading knowledge base...", file=sys.stderr)
-    retriever = Retriever(args.kb_dir, top_k=args.top_k)
+    retriever = Retriever(args.kb_dir, top_k=args.top_k,
+                          runbook_only=args.runbook_only)
     kb_count = retriever.document_count()
-    print(f"  KB ready: {kb_count:,} documents, retrieving top-{args.top_k}",
-          file=sys.stderr)
+    mode = "runbook-only" if args.runbook_only else "source-balanced"
+    print(f"  KB ready: {kb_count:,} documents, retrieving top-{args.top_k} "
+          f"({mode})", file=sys.stderr)
     if kb_count == 0:
         print("ERROR: knowledge base is empty. Build it first "
               "(build_knowledge_base.py).", file=sys.stderr)
@@ -157,13 +174,15 @@ def main():
         if args.limit is not None and len(alerts) >= args.limit:
             break
     print(f"\nLoaded {len(alerts)} test-split alerts.", file=sys.stderr)
-    print(f"Running LLM+RAG with model '{args.model}', {args.workers} workers, "
+    print(f"Running LLM+RAG with {provider.name} model '{provider.model}', "
+          f"{args.workers} workers, "
           f"top-{args.top_k} retrieval...", file=sys.stderr)
 
     # ---- Concurrent inference, sequential aggregation ----
     result = EvaluationResult(pipeline_name="LLM+RAG", split_name="test")
     predictions_path = args.output / "predictions.jsonl"
     n_malformed = 0
+    n_infra_failed = 0
     n_done = 0
     total_retrieval_ms = 0.0
     t_start = time.perf_counter()
@@ -173,11 +192,22 @@ def main():
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             future_to_alert = {
                 pool.submit(infer_one, alert, retriever, args.top_k,
-                            args.model, args.ollama_url): alert
+                            provider): alert
                 for alert in alerts
             }
             for future in as_completed(future_to_alert):
                 rec = future.result()
+
+                # Exclude infrastructure failures from scoring (see run_llm_only).
+                if rec.get("infra_error"):
+                    n_infra_failed += 1
+                    total_retrieval_ms += rec["retrieval_ms"]
+                    with write_lock:
+                        pred_f.write(json.dumps({
+                            k: v for k, v in rec.items() if k != "malformed"
+                        }, default=str) + "\n")
+                    n_done += 1
+                    continue
 
                 result.record(
                     predicted_attack=rec["predicted_is_attack"],
@@ -209,12 +239,15 @@ def main():
     # ---- Results ----
     results_dict = result.to_dict()
     results_dict["malformed_outputs"] = n_malformed
+    results_dict["infra_failed_excluded"] = n_infra_failed
     results_dict["wall_clock_seconds"] = round(elapsed, 1)
     results_dict["throughput_alerts_per_second"] = round(n_done / elapsed, 3) if elapsed else 0
     results_dict["mean_retrieval_ms"] = round(total_retrieval_ms / n_done, 1) if n_done else 0
     results_dict["workers"] = args.workers
     results_dict["top_k"] = args.top_k
-    results_dict["model"] = args.model
+    results_dict["retrieval_mode"] = "runbook_only" if args.runbook_only else "source_balanced"
+    results_dict["provider"] = provider.name
+    results_dict["model"] = provider.model
     results_dict["kb_document_count"] = kb_count
 
     (args.output / "results.json").write_text(
@@ -225,6 +258,10 @@ def main():
     print("=" * 70, file=sys.stderr)
     print(f"  {format_headline(result)}", file=sys.stderr)
     print(f"  Malformed outputs: {n_malformed}/{n_done}", file=sys.stderr)
+    if n_infra_failed:
+        print(f"  ⚠️  Infrastructure failures EXCLUDED from scoring: "
+              f"{n_infra_failed} (rate-limit/timeout). Reduce --workers if high.",
+              file=sys.stderr)
     print(f"  Mean retrieval time: {total_retrieval_ms / n_done:.1f}ms/alert"
           if n_done else "", file=sys.stderr)
     if elapsed:

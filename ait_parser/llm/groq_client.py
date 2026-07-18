@@ -164,6 +164,11 @@ def generate(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
+        # Cloudflare (in front of Groq) blocks requests with a bare urllib
+        # User-Agent (error 1010). Send a standard UA so the request is
+        # allowed through to the API.
+        "User-Agent": "Mozilla/5.0 (compatible; ait-parser-research/1.0)",
+        "Accept": "application/json",
     }
 
     last_err = None
