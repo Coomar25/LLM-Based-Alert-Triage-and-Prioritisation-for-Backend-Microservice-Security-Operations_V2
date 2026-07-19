@@ -31,11 +31,28 @@ per-alert predictions and the aggregate metrics are deterministic.
 
 Usage
 -----
-    python run_llm_only.py \\
-        --input data/processed/sample_2k.jsonl \\
-        --output results/llm_only \\
-        --model llama3.2:3b \\
+    python run_gemini_llm_only.py \
+        --input data/processed/sample_2k.jsonl \
+        --output results/llm_only \
+        --model gemini-pro \
         --workers 3
+
+        # LLM-only
+python3 ait_parser/run_gemini_llm_only.py \
+    --input data/processed/sample_2k.jsonl --output results/llm_only_gemini \
+    --provider gemini --model gemini-2.0-flash --workers 4
+
+# RAG source-balanced
+python3 ait_parser/run_gemini_llm_rag.py \
+    --input data/processed/sample_2k.jsonl --output results/llm_rag_gemini \
+    --kb-dir data/kb --provider gemini --model gemini-2.0-flash \
+    --workers 4 --top-k 3
+
+# RAG runbook-only
+python3 ait_parser/run_gemini_llm_rag.py \
+    --input data/processed/sample_2k.jsonl --output results/llm_rag_gemini_runbook \
+    --kb-dir data/kb --provider gemini --model gemini-2.0-flash \
+    --workers 4 --top-k 1 --runbook-only
 
     # Test on the first 20 alerts before the full run
     python run_llm_only.py --input ... --output ... --limit 20 --workers 3
