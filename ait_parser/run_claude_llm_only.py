@@ -43,44 +43,6 @@ Usage
 The evaluation harness (ConfusionMatrix, EvaluationResult) is imported from
 baselines/ — built once in M6, reused unchanged. This guarantees the LLM
 pipeline is scored on identical metric definitions as the rule-based baseline.
-
-
-Run the three full pipelines now
-Same model, same sample, --workers 2, all three arms. Start LLM-only:
-bash
-
-python3 ait_parser/run_grok_llm_only.py \
-    --input data/processed/sample_2k.jsonl \
-    --output results/llm_only_grok \
-    --provider groq --model llama-3.1-8b-instant \
-    --workers 2
-
-
-Then RAG source-balanced:
-bash
-
-python3 ait_parser/run_grok_llm_rag.py \
-    --input data/processed/sample_2k.jsonl \
-    --output results/llm_rag_grok \
-    --kb-dir data/kb --provider groq --model llama-3.1-8b-instant \
-    --workers 2 --top-k 3
-
-
-Then RAG runbook-only:
-bash
-
-python3 ait_parser/run_grok_llm_rag.py \
-    --input data/processed/sample_2k.jsonl \
-    --output results/llm_rag_grok_runbook \
-    --kb-dir data/kb --provider groq --model llama-3.1-8b-instant \
-    --workers 2 --top-k 1 --runbook-only
-
-
-python3 ait_parser/compare_pipelines.py \
-    --llm-only results/llm_only_grok/results.json \
-    --llm-rag results/llm_rag_grok/results.json \
-    --output results/comparison_grok
-
 """
 
 import argparse
@@ -149,7 +111,7 @@ def main():
                     help="Sampled alerts JSONL (from sampler.py)")
     ap.add_argument("--output", required=True, type=Path,
                     help="Output directory for predictions and results")
-    ap.add_argument("--provider", choices=["ollama", "groq"], default="ollama",
+    ap.add_argument("--provider", choices=["ollama", "groq", "gemini", "anthropic"], default="ollama",
                     help="Inference backend: 'ollama' (local) or 'groq' "
                          "(hosted, fast, needs GROQ_API_KEY). Default: ollama")
     ap.add_argument("--model", default=None,

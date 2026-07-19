@@ -42,6 +42,12 @@ python3 ait_parser/llm/sampler.py \
     --output data/processed/sample_2k.jsonl \
     --profile small \
     --seed 42
+
+python3 ait_parser/llm/sampler.py \
+    --input data/processed/alerts_labeled.jsonl \
+    --output data/processed/sample_3500.jsonl \
+    --profile medium \
+    --seed 42
 """
 
 import argparse
@@ -73,6 +79,21 @@ QUOTA_PROFILES = {
         },
         "benign": 1500,
     },
+    "medium": {
+        "phases": {
+            "reverse_shell":        {"mode": "take_all"},
+            "webshell":             {"mode": "take_all"},
+            "service_stop":         {"mode": "take_all"},
+            "privilege_escalation": {"mode": "take_all"},
+            "network_scans":        {"mode": "cap", "max": 290},
+            "service_scans":        {"mode": "cap", "max": 290},
+            "cracking":             {"mode": "cap", "max": 360},
+            "dnsteal":              {"mode": "cap", "max": 360},
+            "wpscan":               {"mode": "cap", "max": 360},
+            "dirb":                 {"mode": "cap", "max": 577},
+        },
+        "benign": 1000,
+    },
     "small": {
         "phases": {
             # Rare phases — unchanged, take everything
@@ -90,6 +111,8 @@ QUOTA_PROFILES = {
         },
         "benign": 600,
     },
+
+   
 }
 
 
