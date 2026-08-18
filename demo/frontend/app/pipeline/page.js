@@ -26,15 +26,22 @@ const STAGES = [
     n: 4,
     title: "Triage & evaluate",
     body:
-      "A local LLM classifies each held-out alert. LLM+RAG first retrieves the top-k KB entries. Both are scored on identical precision/recall/F1 metrics.",
+      "An LLM classifies each held-out alert — claude-haiku-4-5 via the Claude API for the headline 3,500-alert run; llama3.1:8b via Ollama for the earlier 129-alert local run. LLM+RAG first retrieves the top-k KB entries. All pipelines are scored on identical precision/recall/F1 metrics.",
   },
 ];
+
+// Strip the date suffix from a model id for display (…-20251001).
+const shortModel = (m) => (m || "").replace(/-\d{8}$/, "");
 
 export default function Pipeline() {
   const [ov, setOv] = useState(null);
   useEffect(() => {
     getOverview().then(setOv).catch(() => {});
   }, []);
+
+  // Claude API headline run (overview.claude_3500); null until loaded or on
+  // an overview.json that predates the section.
+  const c = ov?.claude_3500;
 
   return (
     <div className="page">
@@ -59,7 +66,7 @@ export default function Pipeline() {
       </div>
 
       <div className="section-label">Experimental setup</div>
-      <div className="grid cols-3">
+      <div className="grid cols-4">
         <div className="card stat">
           <div className="k">Dataset</div>
           <div className="v" style={{ fontSize: 22 }}>
@@ -68,11 +75,24 @@ export default function Pipeline() {
           <div className="sub">Zenodo 8263181 · CC-BY 4.0 · 8 attack scenarios</div>
         </div>
         <div className="card stat">
-          <div className="k">Model</div>
+          <div className="k">Model — headline run</div>
           <div className="v" style={{ fontSize: 22 }}>
-            {ov ? ov.config.model : "llama3.1:8b"}
+            {shortModel(c?.config.model) || "claude-haiku-4-5"}
           </div>
-          <div className="sub">Run locally via Ollama · no cloud, no API</div>
+          <div className="sub">
+            via the Claude API · earlier run:{" "}
+            {ov ? ov.config.model : "llama3.1:8b"} (Ollama, local)
+          </div>
+        </div>
+        <div className="card stat">
+          <div className="k">Test alerts scored</div>
+          <div className="v" style={{ fontSize: 22 }}>
+            {c ? c.config.n_alerts.toLocaleString() : "3,500"}
+          </div>
+          <div className="sub">
+            held-out test split · earlier local run:{" "}
+            {ov ? ov.config.n_alerts : 129} alerts
+          </div>
         </div>
         <div className="card stat">
           <div className="k">Knowledge base</div>
@@ -87,8 +107,16 @@ export default function Pipeline() {
       <div className="card">
         <ul style={{ lineHeight: 1.7, margin: 0, paddingLeft: 20 }}>
           <li>
-            <b>Local Llama, not a frontier API</b> — reproducibility, zero cost,
-            and data sovereignty for sensitive security logs.
+            <b>Two model tiers, one experiment</b> — the pipeline first ran
+            fully locally (llama3.1:8b via Ollama: zero cost, reproducible,
+            data-sovereign) on 129 alerts, then scaled to claude-haiku-4-5 via
+            the Claude API for the 3,500-alert headline run.
+          </li>
+          <li>
+            <b>RAG&rsquo;s value depends on the model</b> — retrieval improved
+            the stronger Claude model (+4.6% F1, 8 of 10 attack phases better,
+            none worse) but made the local 8B model more cautious and less
+            capable (recall fell). Same KB, same retriever, opposite outcome.
           </li>
           <li>
             <b>all-MiniLM-L6-v2 embeddings</b> — 384-dim, CPU-friendly, a
