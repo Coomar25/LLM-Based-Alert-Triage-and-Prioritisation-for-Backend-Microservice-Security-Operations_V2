@@ -8,19 +8,25 @@ result to the browser over Server-Sent Events (SSE) as it completes.
 It reuses the dissertation code unchanged:
     baselines.rule_based.predict_b1        (instant)
     llm.retrieval.Retriever                (~1s embed + ChromaDB)
-    llm.generate  -> Ollama                (seconds, the slow part)
+    llm.provider.get_provider              (Ollama local · Claude API)
+
+The LLM backend is chosen per run via the same provider dispatch the
+experiment runners use: "ollama" for local models, or "anthropic" for the
+Claude API (claude-haiku-4-5 — the model behind the 3,500-alert headline
+results). Claude needs ANTHROPIC_API_KEY exported before starting uvicorn.
 
 Heavy deps (torch / sentence-transformers / chromadb) and Ollama are only
 touched when a /api/live/* endpoint is actually hit — importing this module is
 cheap, so the cached endpoints in main.py keep working even with no Ollama.
 
 Requires (at demo time, unlike the cached path):
-    - Ollama running with the chosen model pulled
+    - Ollama running with the chosen model pulled, and/or ANTHROPIC_API_KEY
     - demo/.venv (has torch/sentence-transformers/chromadb/fastapi)
     - the ChromaDB knowledge base at data/kb
 """
 
 import json
+import os
 import sys
 import threading
 import time
@@ -33,7 +39,11 @@ from pydantic import BaseModel
 ROOT = Path(__file__).resolve().parents[2]        # code_work/
 AIT = ROOT / "ait_parser"
 KB_DIR = ROOT / "data" / "kb"
-SAMPLES = ROOT / "data" / "processed" / "sample_120.jsonl"
+# Prefer the 3,500-alert test split used for the headline Claude analysis;
+# fall back to the 129-alert local sample if it isn't present.
+_S3500 = ROOT / "data" / "processed" / "sample_3500.jsonl"
+_S120 = ROOT / "data" / "processed" / "sample_120.jsonl"
+SAMPLES = _S3500 if _S3500.exists() else _S120
 
 if str(AIT) not in sys.path:
     sys.path.insert(0, str(AIT))
@@ -41,6 +51,8 @@ if str(AIT) not in sys.path:
 router = APIRouter(prefix="/api/live")
 
 DEFAULT_MODEL = "llama3.2:3b"     # fast enough to feel live; 8b is ~4x slower
+DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # 3,500-alert run model
+ANTHROPIC_MODELS = [DEFAULT_ANTHROPIC_MODEL, "claude-sonnet-4-5"]
 OLLAMA_TAGS = "http://localhost:11434/api/tags"
 B1_THRESHOLD = 2                  # tuned best threshold from baselines/summary.json
 
@@ -98,6 +110,12 @@ def live_health():
         "ollama": ollama_ok,
         "models": models,
         "default_model": DEFAULT_MODEL,
+        "anthropic": {
+            # Key presence only — no paid API call just to render the page.
+            "available": bool(os.environ.get("ANTHROPIC_API_KEY")),
+            "models": ANTHROPIC_MODELS,
+            "default_model": DEFAULT_ANTHROPIC_MODEL,
+        },
         "kb_present": KB_DIR.exists(),
         "error": err,
     }
@@ -124,7 +142,8 @@ class RunRequest(BaseModel):
     alert_id: str | None = None          # pick from dataset …
     alert: dict | None = None            # … or bring your own alert JSON
     pipelines: list[str] = ["baseline", "llm_only", "llm_rag"]
-    model: str = DEFAULT_MODEL
+    provider: str = "ollama"             # "ollama" (local) or "anthropic" (Claude)
+    model: str | None = None             # None -> the provider's default
 
 
 def _resolve_alert(req: RunRequest) -> dict | None:
@@ -180,9 +199,18 @@ def _stream(req: RunRequest):
         "attack_phase": alert.get("attack_phase"),
     } if "is_attack" in alert else None
 
+    # Resolve the LLM backend through the same provider dispatch the
+    # experiment runners use ("ollama" local, "anthropic" = Claude API).
+    try:
+        from llm.provider import get_provider
+        prov = get_provider(req.provider, req.model or None)
+    except ValueError as e:
+        yield _sse({"type": "error", "message": str(e)})
+        return
+
     yield _sse({"type": "start", "alert_id": alert.get("alert_id"),
-                "pipelines": req.pipelines, "model": req.model,
-                "ground_truth": gt})
+                "pipelines": req.pipelines, "provider": prov.name,
+                "model": prov.model, "ground_truth": gt})
 
     # 1) rule-based baseline — instant
     if "baseline" in req.pipelines:
@@ -195,7 +223,7 @@ def _stream(req: RunRequest):
     # Heavy imports only if an LLM pipeline is requested.
     if "llm_only" in req.pipelines or "llm_rag" in req.pipelines:
         from llm import (compact_alert_text, build_llm_only_prompt,
-                         build_rag_prompt, normalise_llm_output, generate)
+                         build_rag_prompt, normalise_llm_output)
 
         alert_text = compact_alert_text(alert)
 
@@ -203,7 +231,7 @@ def _stream(req: RunRequest):
         if "llm_only" in req.pipelines:
             yield _sse({"type": "pipeline_start", "pipeline": "llm_only"})
             prompt = build_llm_only_prompt(alert_text)
-            resp = generate(prompt, model=req.model)
+            resp = prov.generate(prompt)
             pred = normalise_llm_output(resp.parsed_json)
             res = {
                 "predicted_is_attack": pred["is_attack"],
@@ -231,9 +259,9 @@ def _stream(req: RunRequest):
                         "retrieval_ms": retrieval_ms,
                         "docs": _format_hits(hits)})
             yield _sse({"type": "status", "pipeline": "llm_rag",
-                        "message": f"Calling {req.model} with retrieved context…"})
+                        "message": f"Calling {prov.model} with retrieved context…"})
             prompt = build_rag_prompt(alert_text, context)
-            resp = generate(prompt, model=req.model)
+            resp = prov.generate(prompt)
             pred = normalise_llm_output(resp.parsed_json)
             res = {
                 "predicted_is_attack": pred["is_attack"],

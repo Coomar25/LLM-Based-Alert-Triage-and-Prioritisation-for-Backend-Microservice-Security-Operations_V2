@@ -30,6 +30,25 @@ const FILTERS = [
   { key: "both_wrong", label: "Both wrong" },
 ];
 
+// Two triage datasets: the Claude API headline run and the earlier local
+// Ollama run, kept as a progress record.
+const DATASETS = [
+  {
+    key: "claude_3500",
+    label: "Claude API · 3,500 alerts",
+    desc: "claude-haiku-4-5 via the Claude API — headline run",
+  },
+  {
+    key: "local_129",
+    label: "Ollama local · 129 alerts",
+    desc: "llama3.1:8b via Ollama — historical first run",
+  },
+];
+
+// The 3,500-alert list is too long to render at once; show the first rows and
+// let filters + search narrow the rest.
+const LIST_CAP = 300;
+
 function Verdict({ title, color, pred, correct }) {
   const isAttack = pred.predicted_is_attack;
   return (
@@ -94,21 +113,49 @@ function RetrievedDoc({ d }) {
 
 export default function Triage() {
   const [list, setList] = useState(null);
+  const [dataset, setDataset] = useState("claude_3500");
+  const [note, setNote] = useState(null);
   const [filter, setFilter] = useState("rag_broke");
+  const [q, setQ] = useState("");
   const [selId, setSelId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [err, setErr] = useState(null);
 
   useEffect(() => {
-    getAlerts()
+    // Reset selection so the detail panel doesn't fetch an alert id from the
+    // previous dataset (which 404s/503s) while the new list loads.
+    setList(null);
+    setSelId(null);
+    setDetail(null);
+    getAlerts(dataset)
       .then((l) => setList(l))
-      .catch((e) => setErr(String(e)));
-  }, []);
+      .catch((e) => {
+        if (dataset === "claude_3500") {
+          // claude_alerts.json not built yet — fall back to the local run.
+          setNote(
+            "Claude 3,500-alert dataset not built yet (run " +
+              "demo/build_claude_triage.py) — showing the historical local run."
+          );
+          setDataset("local_129");
+        } else {
+          setErr(String(e));
+        }
+      });
+  }, [dataset]);
 
   const filtered = useMemo(() => {
     if (!list) return [];
-    return filter === "all" ? list : list.filter((a) => a.tag === filter);
-  }, [list, filter]);
+    let rows = filter === "all" ? list : list.filter((a) => a.tag === filter);
+    const needle = q.trim().toLowerCase();
+    if (needle) {
+      rows = rows.filter((a) =>
+        [a.description, a.scenario, a.log_source, a.ground_truth.attack_phase]
+          .filter(Boolean)
+          .some((s) => String(s).toLowerCase().includes(needle))
+      );
+    }
+    return rows;
+  }, [list, filter, q]);
 
   // Auto-select the first alert of the current filter.
   useEffect(() => {
@@ -118,12 +165,12 @@ export default function Triage() {
   }, [filtered, selId]);
 
   useEffect(() => {
-    if (!selId) return;
+    if (!selId || !list) return;
     setDetail(null);
-    getAlert(selId)
+    getAlert(selId, dataset)
       .then(setDetail)
       .catch((e) => setErr(String(e)));
-  }, [selId]);
+  }, [selId, list, dataset]);
 
   if (err)
     return (
@@ -142,6 +189,22 @@ export default function Triage() {
         retrieved. Filter to <b>RAG broke</b> to see where retrieval turned a
         correct call into a miss.
       </p>
+
+      <div className="filters" style={{ marginBottom: 14 }}>
+        {DATASETS.map((d) => (
+          <button
+            key={d.key}
+            className={"chip" + (dataset === d.key ? " on" : "")}
+            onClick={() => setDataset(d.key)}
+            title={d.desc}
+          >
+            {d.label}
+          </button>
+        ))}
+        <span style={{ fontSize: 12, color: "#898781", alignSelf: "center" }}>
+          {note || DATASETS.find((d) => d.key === dataset)?.desc}
+        </span>
+      </div>
 
       <div className="triage">
         {/* -------- left: alert list -------- */}
@@ -163,8 +226,23 @@ export default function Triage() {
               );
             })}
           </div>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search description · scenario · phase…"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              margin: "8px 0 4px",
+              padding: "7px 10px",
+              fontSize: 13,
+              border: "1px solid #d8d6cf",
+              borderRadius: 8,
+              background: "#fff",
+            }}
+          />
           <div className="arows">
-            {filtered.map((a) => {
+            {filtered.slice(0, LIST_CAP).map((a) => {
               const tm = TAG_META[a.tag];
               return (
                 <div
@@ -202,6 +280,12 @@ export default function Triage() {
                 </div>
               );
             })}
+            {filtered.length > LIST_CAP && (
+              <div className="loading">
+                Showing first {LIST_CAP} of {filtered.length} — use the
+                filters or search to narrow.
+              </div>
+            )}
             {!filtered.length && (
               <div className="loading">No alerts in this group.</div>
             )}

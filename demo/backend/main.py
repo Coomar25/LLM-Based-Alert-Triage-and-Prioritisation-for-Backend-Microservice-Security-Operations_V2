@@ -42,12 +42,32 @@ except Exception as exc:  # pragma: no cover - keeps cached mode working
 def _load(name: str):
     path = DATA / name
     if not path.exists():
+        hint = ("demo/build_claude_triage.py" if name == "claude_alerts.json"
+                else "demo/build_demo_data.py")
         raise HTTPException(
             status_code=503,
-            detail=f"{name} not found. Run: demo/.venv/bin/python "
-                   f"demo/build_demo_data.py",
+            detail=f"{name} not found. Run: demo/.venv/bin/python {hint}",
         )
     return json.loads(path.read_text())
+
+
+# Triage Explorer datasets. "local_129" is the historical Ollama llama3.1:8b
+# run (kept as a progress record); "claude_3500" is the Claude API headline
+# run, built by demo/build_claude_triage.py.
+DATASETS = {
+    "local_129": "alerts.json",
+    "claude_3500": "claude_alerts.json",
+}
+
+
+def _alerts_file(dataset: str) -> str:
+    if dataset not in DATASETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown dataset '{dataset}' "
+                   f"(expected one of {sorted(DATASETS)})",
+        )
+    return DATASETS[dataset]
 
 
 @app.get("/api/health")
@@ -68,9 +88,9 @@ def phases():
 
 
 @app.get("/api/alerts")
-def alerts_list():
+def alerts_list(dataset: str = "local_129"):
     """Lightweight list for the triage sidebar — no heavy fields."""
-    records = _load("alerts.json")
+    records = _load(_alerts_file(dataset))
     out = []
     for r in records:
         out.append({
@@ -87,8 +107,8 @@ def alerts_list():
 
 
 @app.get("/api/alerts/{alert_id}")
-def alert_detail(alert_id: str):
-    for r in _load("alerts.json"):
+def alert_detail(alert_id: str, dataset: str = "local_129"):
+    for r in _load(_alerts_file(dataset)):
         if r["alert_id"] == alert_id:
             return r
     raise HTTPException(status_code=404, detail="alert not found")
