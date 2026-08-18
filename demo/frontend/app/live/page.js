@@ -137,6 +137,7 @@ export default function LivePage() {
   const [selId, setSelId] = useState("");
   const [pasted, setPasted] = useState("");
   const [sel, setSel] = useState({ baseline: true, llm_only: true, llm_rag: true });
+  const [provider, setProvider] = useState("ollama");
   const [model, setModel] = useState("llama3.2:3b");
   const [pipes, setPipes] = useState(blank());
   const [gt, setGt] = useState(null);
@@ -163,11 +164,20 @@ export default function LivePage() {
     return () => clearInterval(id);
   }, [running]);
 
+  // Keep the model choice valid for the selected provider.
   useEffect(() => {
-    if (health?.models?.length && !health.models.includes(model)) {
-      setModel(health.default_model || health.models[0]);
+    if (!health) return;
+    if (provider === "ollama") {
+      if (health.models?.length && !health.models.includes(model)) {
+        setModel(health.default_model || health.models[0]);
+      }
+    } else {
+      const list = health.anthropic?.models || [];
+      if (!list.includes(model)) {
+        setModel(health.anthropic?.default_model || list[0] || "");
+      }
     }
-  }, [health]); // eslint-disable-line
+  }, [health, provider]); // eslint-disable-line
 
   const pipelines = PIPES.filter((p) => sel[p.key]).map((p) => p.key);
 
@@ -180,7 +190,7 @@ export default function LivePage() {
     setPipes(init);
     setRunning(true);
 
-    let payload = { pipelines, model };
+    let payload = { pipelines, provider, model };
     if (mode === "dataset") {
       payload.alert_id = selId;
     } else {
@@ -242,6 +252,8 @@ export default function LivePage() {
   }
 
   const ollamaOk = health?.ollama;
+  const claudeOk = !!health?.anthropic?.available;
+  const providerOk = provider === "anthropic" ? claudeOk : ollamaOk;
   const selSample = samples.find((s) => s.alert_id === selId);
 
   return (
@@ -256,21 +268,32 @@ export default function LivePage() {
 
       {/* health banner */}
       <div
-        className={"lp-banner " + (ollamaOk ? "ok" : "bad")}
+        className={"lp-banner " + (ollamaOk || claudeOk ? "ok" : "bad")}
         style={{ marginBottom: 20 }}
       >
         {ollamaOk ? (
           <>
-            <b>● Ollama connected.</b> Models: {health.models.join(", ")}. KB:{" "}
-            {health.kb_present ? "loaded" : "missing"}.
+            <b>● Ollama connected</b> ({health.models.join(", ")}).{" "}
           </>
         ) : (
           <>
-            <b>● Ollama not reachable.</b> Start it with{" "}
-            <code>ollama serve</code> and pull a model (
-            <code>ollama pull llama3.2:3b</code>), then reload.{" "}
-            {health?.error && <span>({health.error})</span>}
+            <b>● Ollama not reachable</b> — <code>ollama serve</code> +{" "}
+            <code>ollama pull llama3.2:3b</code> for local models.{" "}
           </>
+        )}
+        {claudeOk ? (
+          <>
+            <b>● Claude API ready</b> ({health.anthropic.default_model}).{" "}
+          </>
+        ) : (
+          <>
+            <b>● Claude API unavailable</b> — export{" "}
+            <code>ANTHROPIC_API_KEY</code> before starting the backend.{" "}
+          </>
+        )}
+        KB: {health?.kb_present ? "loaded" : "missing"}.
+        {!ollamaOk && !claudeOk && health?.error && (
+          <span> ({health.error})</span>
         )}
       </div>
 
@@ -349,25 +372,51 @@ export default function LivePage() {
             ))}
           </div>
 
-          <div className="section-label">3 · Model</div>
+          <div className="section-label">3 · LLM provider &amp; model</div>
+          <div className="lp-tabs">
+            <button
+              className={"chip" + (provider === "ollama" ? " on" : "")}
+              onClick={() => setProvider("ollama")}
+              title="Local models via Ollama"
+            >
+              Ollama (local)
+            </button>
+            <button
+              className={"chip" + (provider === "anthropic" ? " on" : "")}
+              onClick={() => setProvider("anthropic")}
+              title="Claude via the Anthropic API — the model behind the 3,500-alert results"
+            >
+              Claude API
+            </button>
+          </div>
           <select
             className="lp-select"
             value={model}
             onChange={(e) => setModel(e.target.value)}
           >
-            {(health?.models || ["llama3.2:3b"]).map((m) => (
+            {(provider === "ollama"
+              ? health?.models || ["llama3.2:3b"]
+              : health?.anthropic?.models || ["claude-haiku-4-5-20251001"]
+            ).map((m) => (
               <option key={m} value={m}>
                 {m}
                 {m === "llama3.2:3b" ? " (fast — recommended)" : ""}
+                {m.startsWith("claude-haiku") ? " (used in the 3,500-alert analysis)" : ""}
               </option>
             ))}
           </select>
+          {provider === "anthropic" && !claudeOk && (
+            <div className="lp-sub" style={{ marginTop: 8 }}>
+              Claude needs <code>ANTHROPIC_API_KEY</code> exported in the
+              backend environment.
+            </div>
+          )}
 
           <div style={{ marginTop: 20, display: "flex", gap: 10 }}>
             {!running ? (
               <button
                 className="lp-run-btn"
-                disabled={!ollamaOk || !pipelines.length}
+                disabled={!providerOk || !pipelines.length}
                 onClick={run}
               >
                 ▶ Run triage
@@ -380,9 +429,13 @@ export default function LivePage() {
           </div>
           {err && <div className="lp-err">{err}</div>}
           <div className="lp-sub" style={{ marginTop: 14 }}>
-            Tip: LLM-only and LLM+RAG each take several seconds on{" "}
-            {model.includes("8b") ? "the 8B model" : "the 3B model"}; the
-            baseline is instant. Results stream in as each finishes.
+            Tip:{" "}
+            {provider === "anthropic"
+              ? "Claude answers in ~2s per pipeline via the API"
+              : `LLM-only and LLM+RAG each take several seconds on ${
+                  model.includes("8b") ? "the 8B model" : "the 3B model"
+                }`}
+            ; the baseline is instant. Results stream in as each finishes.
           </div>
         </div>
 

@@ -10,8 +10,13 @@ async function getJSON(path) {
 
 export const getOverview = () => getJSON("/api/overview");
 export const getPhases = () => getJSON("/api/phases");
-export const getAlerts = () => getJSON("/api/alerts");
-export const getAlert = (id) => getJSON(`/api/alerts/${id}`);
+
+// Triage datasets: "claude_3500" (headline Claude API run) or "local_129"
+// (historical Ollama run). Omitting dataset keeps the backend default.
+const ds = (dataset) => (dataset ? `?dataset=${dataset}` : "");
+export const getAlerts = (dataset) => getJSON(`/api/alerts${ds(dataset)}`);
+export const getAlert = (id, dataset) =>
+  getJSON(`/api/alerts/${id}${ds(dataset)}`);
 
 // --- Live inference ---------------------------------------------------------
 export const getLiveHealth = () => getJSON("/api/live/health");

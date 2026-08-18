@@ -38,6 +38,10 @@ COMPARISON = ROOT / "results" / "comparison_8b" / "comparison.json"
 BASELINES = ROOT / "results" / "baselines" / "summary.json"
 KB_DIR = ROOT / "data" / "kb"
 
+# Headline Claude API run: 3,500 held-out test alerts, claude-haiku-4-5.
+# The 8B files above stay as the historical local (Ollama) baseline.
+CLAUDE_DIR = ROOT / "results" / "claude_api" / "all"
+
 TOP_K = 3  # matches the 8B RAG run (results.json -> top_k)
 
 
@@ -119,6 +123,64 @@ def format_hits(hits):
             if isinstance(dist, (int, float)) else None,
         })
     return out
+
+
+def build_claude_3500():
+    """Overview block for the Claude API headline run (3,500 test alerts).
+
+    Reads the committed results under results/claude_api/all. Returns None if
+    the files are missing so the local-only build still works.
+    """
+    def load(name):
+        p = CLAUDE_DIR / name
+        return json.loads(p.read_text()) if p.exists() else None
+
+    only = load("claude_3500_results.json")
+    rag = load("rag_claude_results.json")
+    runbook = load("runbook_results.json")
+    comparison = load("overall_claude_comparision_comparison.json")
+    if not (only and rag and comparison):
+        return None
+
+    def pipe(res):
+        o = res["overall"]
+        return {
+            "precision": o["precision"],
+            "recall": o["recall"],
+            "f1": o["f1"],
+            "fpr": o["false_positive_rate"],
+            "accuracy": o["accuracy"],
+            "n_alerts": res["n_alerts"],
+            "mean_latency_ms": res["mean_latency_ms"],
+        }
+
+    pipelines = {"llm_only": pipe(only), "llm_rag": pipe(rag)}
+    confusion = {"llm_only": only["overall"], "llm_rag": rag["overall"]}
+    if runbook:
+        pipelines["llm_rag_runbook"] = pipe(runbook)
+        confusion["llm_rag_runbook"] = runbook["overall"]
+
+    phases = [
+        {"phase": name, "llm_only": d["llm_only"], "llm_rag": d["llm_rag"],
+         "delta": round(d["delta"], 4)}
+        for name, d in comparison["per_phase_recall"].items()
+    ]
+    return {
+        "config": {
+            "provider": rag.get("provider", "anthropic"),
+            "model": rag.get("model", "claude-haiku-4-5-20251001"),
+            "n_alerts": rag["n_alerts"],
+            "split": rag.get("split_name", "test"),
+            "top_k": rag.get("top_k", 3),
+            "kb_document_count": rag.get("kb_document_count"),
+            "dataset": "AIT-ADS (Zenodo 8263181)",
+            "source": "results/claude_api",
+        },
+        "pipelines": pipelines,
+        "confusion": confusion,
+        "rag_effect": comparison.get("rag_effect", {}),
+        "phases": phases,
+    }
 
 
 DISPLAY_FIELDS = [
@@ -206,6 +268,8 @@ def main():
             "split": rag_res.get("split_name", "test"),
             "top_k": rag_res.get("top_k", TOP_K),
             "dataset": "AIT-ADS (Zenodo 8263181)",
+            "note": ("Historical local baseline (Ollama llama3.1:8b, 129 "
+                     "alerts) — kept as a progress record"),
         },
         "pipelines": {
             "llm_only": ov["llm_only"],
@@ -219,6 +283,12 @@ def main():
         "baselines": baselines,
         "story_counts": tally,
     }
+    claude = build_claude_3500()
+    if claude:
+        overview["claude_3500"] = claude
+    else:
+        print("  [warn] results/claude_api/all missing — overview built "
+              "without the Claude 3500 section", file=sys.stderr)
     (OUT / "overview.json").write_text(json.dumps(overview, indent=1))
 
     # ---------- phases.json ----------
